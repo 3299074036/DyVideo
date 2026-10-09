@@ -101,6 +101,26 @@ export interface DyUser {
   signature?: string;
 }
 
+/** 评论 */
+export interface DyComment {
+  cid: string;
+  text: string;
+  create_time: number;
+  digg_count: number;
+  reply_count: number;
+  user: {
+    uid: string;
+    nickname: string;
+    avatar_thumb?: DyUrlItem;
+  };
+}
+
+export interface CommentListResult {
+  comments: DyComment[];
+  cursor: number;
+  has_more: boolean;
+}
+
 export class DouyinError extends Error {
   code: 'blocked' | 'network' | 'auth' | 'server';
   constructor(code: DouyinError['code'], message: string) {
@@ -290,6 +310,138 @@ export function pickCoverUrl(a: Aweme): string | null {
   return a.video?.cover?.url_list?.[0] ?? a.video?.origin_cover?.url_list?.[0] ?? null;
 }
 
+// ------------------------------------------------------------------ 评论列表（读操作，无需 a_bogus 签名）
+
+const COMMENT_LIST_ENDPOINT = '/aweme/v1/web/comment/list/';
+
+/** 拉取视频评论列表；cursor 翻页，count 每页条数 */
+export async function fetchCommentList(
+  awemeId: string,
+  cursor = 0,
+  count = 20
+): Promise<CommentListResult> {
+  const params: Record<string, string> = {
+    device_platform: 'webapp',
+    aid: '6383',
+    channel: 'channel_pc_web',
+    aweme_id: awemeId,
+    cursor: String(cursor),
+    count: String(count),
+  };
+  const url = `${DOUYIN_ORIGIN}${COMMENT_LIST_ENDPOINT}?${buildQuery(params)}`;
+  const cookie = await getCookieHeader();
+  const resp = await fetch(url, {
+    headers: {
+      'User-Agent': DOUYIN_UA,
+      Referer: `${DOUYIN_ORIGIN}/`,
+      ...(cookie ? { Cookie: cookie } : {}),
+    },
+  });
+  if (!resp.ok) throw new DouyinError('network', `评论列表请求失败: ${resp.status}`);
+  const data = await resp.json();
+  if (data.status_code !== 0) {
+    throw new DouyinError('server', `评论列表异常: ${data.status_msg || data.status_code}`);
+  }
+  const comments: DyComment[] = (data.comments ?? []).map((c: any) => ({
+    cid: String(c.cid ?? ''),
+    text: String(c.text ?? ''),
+    create_time: Number(c.create_time ?? 0),
+    digg_count: Number(c.digg_count ?? 0),
+    reply_count: Number(c.reply_count ?? 0),
+    user: {
+      uid: String(c.user?.uid ?? ''),
+      nickname: String(c.user?.nickname ?? '匿名'),
+      avatar_thumb: c.user?.avatar_thumb,
+    },
+  }));
+  return {
+    comments,
+    cursor: Number(data.cursor ?? 0),
+    has_more: Boolean(data.has_more),
+  };
+}
+
+/** 数字格式化：12345 -> 1.2万 */
+export function formatCount(n: number): string {
+  if (n >= 10000) return `${(n / 10000).toFixed(1)}万`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}千`;
+  return String(n);
+}
+
+// ------------------------------------------------------------------ 写操作（RN 直调，显式带 Cookie）
+// 注意：先试不带 a_bogus 的裸调；若报签名错再走页面上下文
+
+const WRITE_BASE = 'device_platform=webapp&aid=6383&channel=channel_pc_web';
+
+async function postForm(
+  endpoint: string,
+  params: Record<string, string>
+): Promise<{ ok: boolean; code?: number; msg: string }> {
+  const url = `${DOUYIN_ORIGIN}${endpoint}?${WRITE_BASE}`;
+  const cookie = await getCookieHeader();
+  const body = Object.keys(params)
+    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`)
+    .join('&');
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'User-Agent': DOUYIN_UA,
+        Referer: `${DOUYIN_ORIGIN}/`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+      body,
+    });
+    const text = await resp.text();
+    let data: any = {};
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return { ok: false, msg: `非JSON响应 http=${resp.status}` };
+    }
+    const code = data.status_code;
+    if (resp.status === 200 && code === 0) return { ok: true, msg: 'ok' };
+    return { ok: false, code, msg: `http=${resp.status} code=${code} ${data.status_msg || ''}`.trim() };
+  } catch (e: any) {
+    return { ok: false, msg: `网络异常: ${e?.message || e}` };
+  }
+}
+
+/** 点赞/取消点赞 */
+export async function apiDigg(awemeId: string, like: boolean) {
+  return postForm('/aweme/v1/web/commit/item/digg/', {
+    aweme_id: awemeId,
+    item_type: '0',
+    type: like ? '1' : '0',
+  });
+}
+
+/** 收藏/取消收藏 */
+export async function apiCollect(awemeId: string, collect: boolean) {
+  return postForm('/aweme/v1/web/aweme/collect/', {
+    aweme_id: awemeId,
+    action: collect ? '1' : '2',
+  });
+}
+
+/** 关注/取关（sec_user_id） */
+export async function apiFollow(secUid: string, follow: boolean) {
+  return postForm('/aweme/v1/web/commit/follow/user/', {
+    sec_user_id: secUid,
+    type: follow ? '1' : '0',
+  });
+}
+
+/** 发表评论 */
+export async function apiPublishComment(awemeId: string, text: string) {
+  return postForm('/aweme/v1/web/comment/publish', {
+    aweme_id: awemeId,
+    text,
+    text_extra: '[]',
+  });
+}
+
 // ------------------------------------------------------------------ Cookie / 登录态
 
 const COOKIE_URL = `${DOUYIN_ORIGIN}/`;
@@ -306,10 +458,26 @@ export async function getCookieHeader(): Promise<string> {
 /** 是否已登录：jar 里有 sessionid / sessionid_ss 即认为已登录 */
 export async function hasLoginSession(): Promise<boolean> {
   try {
-    const cookies = await CookieManager.get(COOKIE_URL);
-    return !!(cookies.sessionid || cookies.sessionid_ss);
+    // 用 getCookieHeader 拿原始字符串再手动解析：get() 在遇到畸形 Cookie
+    // 时会抛 IllegalArgumentException: Invalid cookie name-value pair
+    const header = await CookieManager.getCookieHeader(COOKIE_URL);
+    return /(?:^|;\s*)(sessionid|sessionid_ss)=/.test(header);
   } catch {
     return false;
+  }
+}
+
+/** 诊断：返回当前 Cookie 名列表（不含值），用于排查登录态检测 */
+export async function listCookieNames(): Promise<string> {
+  try {
+    const header = await CookieManager.getCookieHeader(COOKIE_URL);
+    const names = header
+      .split(';')
+      .map((p) => p.trim().split('=')[0])
+      .filter(Boolean);
+    return names.join(',') || '(empty)';
+  } catch (e) {
+    return `(error:${e})`;
   }
 }
 

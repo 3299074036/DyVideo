@@ -23,6 +23,8 @@ import {
 import { WebView } from 'react-native-webview';
 import { router } from 'expo-router';
 import VideoCard from '@/components/VideoCard';
+import CommentSheet from '@/components/CommentSheet';
+import ActionBridge, { type ActionBridgeRef } from '@/components/ActionBridge';
 import FeedInterceptor, {
   ApiHit,
   DetailResult,
@@ -34,9 +36,14 @@ import FeedInterceptor, {
   buildFeedRequestJS,
 } from '@/components/FeedInterceptor';
 import { useAuth } from '@/stores/auth';
+import LoginPreloadOverlay from '@/components/LoginPreloadOverlay';
 import {
   Aweme,
   isPlayableVideo,
+  apiDigg,
+  apiCollect,
+  apiFollow,
+  apiPublishComment,
 } from '@/services/douyin';
 
 const { height: SCREEN_H } = Dimensions.get('window');
@@ -67,13 +74,18 @@ function parseFeedBody(body: string): Aweme[] {
 }
 
 export default function FeedScreen() {
-  const { status: authStatus } = useAuth();
+  const { status: authStatus, completeLogin } = useAuth();
   const [items, setItems] = useState<Aweme[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hookReady, setHookReady] = useState(false);
+  const [loginVisible, setLoginVisible] = useState(false);
+  // v2 互动（DOM 路线：点页面原生按钮）
+  const bridgeRef = useRef<ActionBridgeRef | null>(null);
+  const [commentAwemeId, setCommentAwemeId] = useState<string | null>(null);
+  const [commentCount, setCommentCount] = useState(0);
   // 诊断（release 也显示在错误页上）：定位"抓不到数据"卡在哪一步
   const [diagPage, setDiagPage] = useState('');
   const [diagApiHits, setDiagApiHits] = useState(0);
@@ -253,8 +265,50 @@ export default function FeedScreen() {
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 80 }).current;
 
   const handleAvatarPress = useCallback(() => {
-    router.push(authStatus === 'logged-in' ? '/me' : '/login');
+    if (authStatus === 'logged-in') {
+      router.push('/me');
+    } else {
+      // 未登录：直接弹预加载登录浮层（秒出表单）
+      setLoginVisible(true);
+    }
   }, [authStatus]);
+
+  const handleLoginSuccess = useCallback(async () => {
+    setLoginVisible(false);
+    await completeLogin();
+  }, [completeLogin]);
+
+  // v2 互动：经 ActionBridge 点页面原生按钮（抖音自己算签名）
+  const handleLike = useCallback(async (awemeId: string, like: boolean) => {
+    if (!bridgeRef.current) { ToastAndroid.show('操作桥未就绪', ToastAndroid.SHORT); return false; }
+    const r = await bridgeRef.current.digg(awemeId, like);
+    if (!r.ok) ToastAndroid.show(`点赞失败: ${r.msg}`, ToastAndroid.SHORT);
+    return r.ok;
+  }, []);
+
+  const handleCommentOpen = useCallback((awemeId: string) => {
+    const item = items.find((a) => a.aweme_id === awemeId);
+    setCommentCount(item?.statistics.comment_count ?? 0);
+    setCommentAwemeId(awemeId);
+  }, [items]);
+
+  const handleCollect = useCallback(async (awemeId: string, collect: boolean) => {
+    if (!bridgeRef.current) { ToastAndroid.show('操作桥未就绪', ToastAndroid.SHORT); return false; }
+    const r = await bridgeRef.current.collect(awemeId, collect);
+    if (!r.ok) ToastAndroid.show(`收藏失败: ${r.msg}`, ToastAndroid.SHORT);
+    else ToastAndroid.show(collect ? '已收藏' : '已取消收藏', ToastAndroid.SHORT);
+    return r.ok;
+  }, []);
+
+  const handleFollow = useCallback(async (awemeId: string, follow: boolean) => {
+    // 注意：DOM 路线用 awemeId 加载视频页点关注按钮（secUid 暂不用）
+    if (!bridgeRef.current) { ToastAndroid.show('操作桥未就绪', ToastAndroid.SHORT); return false; }
+    const r = await bridgeRef.current.follow(awemeId, follow);
+    if (!r.ok) ToastAndroid.show(`关注失败: ${r.msg}`, ToastAndroid.SHORT);
+    else ToastAndroid.show(follow ? '已关注' : '已取关', ToastAndroid.SHORT);
+    return r.ok;
+  }, []);
+
 
   const handleV2Press = useCallback((label: string) => {
     toast(`${label} v2 再做`);
@@ -285,9 +339,13 @@ export default function FeedScreen() {
         onAvatarPress={handleAvatarPress}
         onV2Press={handleV2Press}
         onRefreshPlayUrl={refreshPlayUrl}
+        onLike={handleLike}
+        onComment={handleCommentOpen}
+        onCollect={handleCollect}
+        onFollow={handleFollow}
       />
     ),
-    [activeIndex, handleAvatarPress, handleV2Press, refreshPlayUrl]
+    [activeIndex, handleAvatarPress, handleV2Press, refreshPlayUrl, handleLike, handleCommentOpen, handleCollect, handleFollow]
   );
 
   const keyExtractor = useCallback((item: Aweme) => item.aweme_id, []);
@@ -348,6 +406,22 @@ export default function FeedScreen() {
               </View>
             ) : null
           }
+        />
+      )}
+      <LoginPreloadOverlay
+        visible={loginVisible}
+        onClose={() => setLoginVisible(false)}
+        onLoginSuccess={handleLoginSuccess}
+      />
+      {/* v2：DOM 操作桥（常驻隐藏）+ 评论弹窗 */}
+      <ActionBridge ref={bridgeRef} />
+      {commentAwemeId && (
+        <CommentSheet
+          visible={!!commentAwemeId}
+          awemeId={commentAwemeId}
+          commentCount={commentCount}
+          onClose={() => setCommentAwemeId(null)}
+          bridgeRef={bridgeRef}
         />
       )}
     </View>

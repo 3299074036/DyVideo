@@ -19,6 +19,7 @@ import {
   Share,
   StyleSheet,
   Text,
+  ToastAndroid,
   View,
 } from 'react-native';
 import { VideoView, useVideoPlayer } from 'expo-video';
@@ -49,6 +50,11 @@ interface Props {
   onV2Press: (label: string) => void;
   /** 403 时换新鲜 play_url（返回带新 play_addr 的结果，失败时 diag 说明原因） */
   onRefreshPlayUrl: (awemeId: string) => Promise<RefreshPlayUrlResult>;
+  /** v2 互动：点赞/评论/收藏/关注 */
+  onLike: (awemeId: string, like: boolean) => Promise<boolean>;
+  onComment: (awemeId: string) => void;
+  onCollect: (awemeId: string, collect: boolean) => Promise<boolean>;
+  onFollow: (awemeId: string, follow: boolean) => Promise<boolean>;
 }
 
 /** 远端播放请求头：只带 Referer + UA（跨域 Cookie 会被 WAF 403） */
@@ -61,11 +67,17 @@ interface StreamProps extends Props {
   playUrls: string[];
 }
 
-function StreamingVideoCard({ item, playUrls, active, height, onAvatarPress, onV2Press, onRefreshPlayUrl }: StreamProps) {
+function StreamingVideoCard({ item, playUrls, active, height, onAvatarPress, onV2Press, onRefreshPlayUrl, onLike, onComment, onCollect, onFollow }: StreamProps) {
   const [playError, setPlayError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
   const [progress, setProgress] = useState(0);
   const [hasReady, setHasReady] = useState(false);
+  // v2 互动状态（乐观更新）
+  const [liked, setLiked] = useState(false);
+  const [collected, setCollected] = useState(false);
+  const [followed, setFollowed] = useState(false);
+  const [diggCount, setDiggCount] = useState(item.statistics.digg_count);
+  const [collectCount, setCollectCount] = useState(item.statistics.collect_count);
   // 当前在试第几个 CDN 地址（url_list 里一般有 3 个，换着试）
   const [urlIndex, setUrlIndex] = useState(0);
   const refreshedRef = useRef(false);
@@ -213,6 +225,37 @@ function StreamingVideoCard({ item, playUrls, active, height, onAvatarPress, onV
     }
   };
 
+  // v2 互动：乐观更新 + 调桥，失败回滚
+  const handleLike = async () => {
+    const next = !liked;
+    setLiked(next);
+    setDiggCount((c) => c + (next ? 1 : -1));
+    fireHeart();
+    const ok = await onLike(item.aweme_id, next);
+    if (!ok) {
+      setLiked(!next);
+      setDiggCount((c) => c + (next ? -1 : 1));
+    }
+  };
+
+  const handleCollect = async () => {
+    const next = !collected;
+    setCollected(next);
+    setCollectCount((c) => c + (next ? 1 : -1));
+    const ok = await onCollect(item.aweme_id, next);
+    if (!ok) {
+      setCollected(!next);
+      setCollectCount((c) => c + (next ? -1 : 1));
+    }
+  };
+
+  const handleFollow = async () => {
+    const next = !followed;
+    setFollowed(next);
+    const ok = await onFollow(item.aweme_id, next);
+    if (!ok) setFollowed(!next);
+  };
+
   const discSpin = discAnim.interpolate({
     inputRange: [0, 1],
     outputRange: ['0deg', '360deg'],
@@ -311,24 +354,21 @@ function StreamingVideoCard({ item, playUrls, active, height, onAvatarPress, onV
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>{avatarChar}</Text>
           </View>
-          <View style={styles.followPlus}>
-            <Text style={styles.followPlusText}>+</Text>
-          </View>
+          <Pressable style={[styles.followPlus, followed && styles.followDone]} onPress={handleFollow}>
+            <Text style={styles.followPlusText}>{followed ? '✓' : '+'}</Text>
+          </Pressable>
         </Pressable>
-        <Pressable style={styles.railItemDim} onPress={() => onV2Press('点赞')}>
-          <Text style={styles.railIcon}>❤</Text>
-          <Text style={styles.railText}>{formatCount(stats.digg_count)}</Text>
-          <Text style={styles.v2badge}>v2</Text>
+        <Pressable style={styles.railItem} onPress={handleLike}>
+          <Text style={[styles.railIcon, liked && styles.likedIcon]}>❤</Text>
+          <Text style={styles.railText}>{formatCount(diggCount)}</Text>
         </Pressable>
-        <Pressable style={styles.railItemDim} onPress={() => onV2Press('评论')}>
+        <Pressable style={styles.railItem} onPress={() => onComment(item.aweme_id)}>
           <Text style={styles.railIcon}>💬</Text>
           <Text style={styles.railText}>{formatCount(stats.comment_count)}</Text>
-          <Text style={styles.v2badge}>v2</Text>
         </Pressable>
-        <Pressable style={styles.railItemDim} onPress={() => onV2Press('收藏')}>
-          <Text style={styles.railIcon}>⭐</Text>
-          <Text style={styles.railText}>{formatCount(stats.collect_count)}</Text>
-          <Text style={styles.v2badge}>v2</Text>
+        <Pressable style={styles.railItem} onPress={handleCollect}>
+          <Text style={[styles.railIcon, collected && styles.likedIcon]}>⭐</Text>
+          <Text style={styles.railText}>{formatCount(collectCount)}</Text>
         </Pressable>
         <Pressable style={styles.railItem} onPress={handleShare}>
           <Text style={styles.railIcon}>↗</Text>
@@ -447,18 +487,11 @@ const styles = StyleSheet.create({
     marginTop: -10,
   },
   followPlusText: { color: '#fff', fontSize: 14, lineHeight: 16 },
+  followDone: { backgroundColor: '#3a3a3a' },
   railItem: { alignItems: 'center' },
-  railItemDim: { alignItems: 'center', opacity: 0.9 },
   railIcon: { fontSize: 30 },
+  likedIcon: { color: '#fe2c55' },
   railText: { color: '#fff', fontSize: 12, marginTop: 2 },
-  v2badge: {
-    color: '#000',
-    backgroundColor: '#fc0',
-    fontSize: 9,
-    paddingHorizontal: 4,
-    borderRadius: 4,
-    marginTop: 2,
-  },
   disc: {
     width: 44,
     height: 44,
