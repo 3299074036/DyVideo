@@ -1,4 +1,4 @@
-/** 我的页（按 v1 效果图）：登录态展示 + 退出登录 */
+/** 我的页（按 v1 效果图）：登录态展示 + 退出登录；登录 WebView 预加载，点"去登录"秒弹表单 */
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -12,7 +12,9 @@ import {
 import { router } from 'expo-router';
 import { clearVideoCacheAsync, getCurrentVideoCacheSize } from 'expo-video';
 import { useAuth } from '@/stores/auth';
+import LoginPreloadOverlay from '@/components/LoginPreloadOverlay';
 
+/** 后台自动点出登录弹窗并隔离，只上报状态 */
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -20,14 +22,21 @@ function formatBytes(n: number): string {
 }
 
 export default function MeScreen() {
-  const { status, user, logout } = useAuth();
+  const { status, user, logout, completeLogin } = useAuth();
   const [cacheSize, setCacheSize] = useState<string>('…');
   const [loggingOut, setLoggingOut] = useState(false);
+  const [loginVisible, setLoginVisible] = useState(false);
 
   const loggedIn = status === 'logged-in';
   const nickname = user?.nickname ?? '游客';
   const douyinId = user?.unique_id || user?.short_id || '未登录';
   const avatarChar = (user?.nickname || '游').slice(0, 1);
+
+  const handleLoginSuccess = useCallback(async () => {
+    setLoginVisible(false);
+    await completeLogin();
+    ToastAndroid.show('登录成功', ToastAndroid.SHORT);
+  }, [completeLogin]);
 
   const refreshCacheSize = useCallback(async () => {
     try {
@@ -92,7 +101,7 @@ export default function MeScreen() {
             <Text style={styles.badgeText}>已登录</Text>
           </View>
         ) : (
-          <Pressable style={styles.loginBtn} onPress={() => router.push('/login')}>
+          <Pressable style={styles.loginBtn} onPress={() => setLoginVisible(true)}>
             <Text style={styles.loginBtnText}>去登录</Text>
           </Pressable>
         )}
@@ -126,6 +135,15 @@ export default function MeScreen() {
       )}
 
       <Text style={styles.foot}>仅自用 · 不公开发布{'\n'}退出登录将清除本机全部登录态</Text>
+
+      {/* 登录浮层：共享预加载组件 */}
+      {!loggedIn && (
+        <LoginPreloadOverlay
+          visible={loginVisible}
+          onClose={() => setLoginVisible(false)}
+          onLoginSuccess={handleLoginSuccess}
+        />
+      )}
     </View>
   );
 }

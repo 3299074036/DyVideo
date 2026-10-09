@@ -1,8 +1,8 @@
-/** 扫码登录（按 v1 效果图）：官方页 WebView 二维码 + 原生 Cookie 导出 */
+/** 原生登录（按确认效果图）：DyVideo 原生手机号+验证码 UI，后台隐藏 WebView 跑抖音官方登录 */
 import React, { useCallback, useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { router } from 'expo-router';
-import QrLoginView from '@/components/QrLoginView';
+import NativeLoginView from '@/components/NativeLoginView';
 import { useAuth } from '@/stores/auth';
 
 export default function LoginScreen() {
@@ -29,20 +29,15 @@ export default function LoginScreen() {
           <Text style={styles.finishingText}>登录成功，正在同步…</Text>
         </View>
       ) : (
-        <QrLoginView onLoginSuccess={handleLoginSuccess} />
+        <NativeLoginView onLoginSuccess={handleLoginSuccess} />
       )}
 
-      <Text style={styles.steps}>
-        <Text style={styles.stepsBold}>打开抖音 App</Text>
-        {' → 右上角扫一扫\n对准二维码即可登录'}
-      </Text>
-
-      <Pressable onPress={() => router.back()}>
+      <Pressable onPress={() => router.back()} style={styles.cancelBtn}>
         <Text style={styles.cancel}>暂不登录（仅看热门）</Text>
       </Pressable>
 
       <Text style={styles.note}>
-        二维码由抖音官方页面生成，账号密码不经过本 App{'\n'}登录态仅保存在本机安全存储
+        验证码由抖音官方短信发送，不经过本 App{'\n'}登录态仅保存在本机
       </Text>
     </View>
   );
@@ -80,10 +75,9 @@ const styles = StyleSheet.create({
     marginBottom: 26,
   },
   stepsBold: { color: '#fff', fontWeight: '700' },
+  cancelBtn: { marginTop: 18, marginBottom: 30 },
   cancel: { fontSize: 14, color: '#888' },
   note: {
-    position: 'absolute',
-    bottom: 26,
     fontSize: 11,
     color: '#555',
     paddingHorizontal: 30,
